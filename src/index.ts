@@ -5,6 +5,7 @@ import jobRoutes from "./routes/jobs.js";
 
 dotenv.config();
 
+// Initialize Express backend for Milesto Escrow Platform
 const app = express();
 const PORT = process.env.PORT || 3001;
 

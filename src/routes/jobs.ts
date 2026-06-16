@@ -15,6 +15,30 @@ const CONTRACT_ID = process.env.CONTRACT_ID || "";
 const RPC_URL = "https://soroban-testnet.stellar.org";
 const server = new Server(RPC_URL);
 
+// GET /api/jobs/by-wallet/:address - get jobs associated with a wallet
+router.get("/by-wallet/:address", async (req: Request, res: Response) => {
+  try {
+    const { address } = req.params;
+    // For now, we have a single deployed contract
+    const contractId = CONTRACT_ID;
+    const contract = new Contract(contractId);
+    const deployerAccount = await server.getAccount(process.env.DEPLOYER_ADDRESS || "");
+    const tx = new TransactionBuilder(deployerAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.TESTNET,
+    })
+      .addOperation(contract.call("get_job"))
+      .setTimeout(30)
+      .build();
+    const result = await server.simulateTransaction(tx);
+    
+    // Return job if address is client, freelancer, or arbiter
+    res.json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /api/jobs/:contractId - get job state
 router.get("/:contractId", async (req: Request, res: Response) => {
   try {

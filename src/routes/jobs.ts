@@ -138,6 +138,20 @@ router.post("/build-tx", async (req: Request, res: Response) => {
     const contract = new Contract(contractId as string);
     const account = await server.getAccount(sourceAddress as string);
 
+    // Validate for whitelist management methods
+    if (method === "add_whitelisted_token" || method === "remove_whitelisted_token") {
+      // Check that args has admin and token
+      const adminArg = args.find((a: any) => a.type === "address" && a.value);
+      const tokenArg = args.find((a: any) => a.type === "address" && a.value && a !== adminArg);
+      
+      if (!adminArg || !tokenArg) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Both admin (address) and token (address) arguments are required for whitelist management methods" 
+        });
+      }
+    }
+
     const scArgs = (args || []).map((a: any) => {
       if (a.type === "address") return Address.fromString(a.value).toScVal();
       if (a.type === "i128") return nativeToScVal(BigInt(a.value), { type: "i128" });

@@ -1,9 +1,33 @@
-import { Router, Request, Response } from 'express';
-// FIXED: Added the required .js extension for native ES Modules
-import { cacheService } from '../services/cacheService.js';
+import { Router } from "express";
+import type { Request, Response } from "express";
+import {
+  Contract,
+  Networks,
+  TransactionBuilder,
+  BASE_FEE,
+  nativeToScVal,
+  Address,
+} from "@stellar/stellar-sdk";
+import { Server } from "@stellar/stellar-sdk/rpc";
+import { cacheService } from "../services/cacheService.js";
+import { getJobsByWallet } from "../indexer/db.js";
+import { jobContractRateLimit } from "../middleware/job-contract-rate-limit.js";
+import {
+  jobContractCors,
+  jobContractSecurityHeaders,
+} from "../middleware/job-contract-security.js";
+import { sendError, sendSuccess } from "../utils/api-response.js";
+import { isValidStellarContractId } from "../utils/stellar.js";
 
 const router = Router();
+const server = new Server(process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org");
 
+// Helper function to handle Stellar contract result parsing
+function parseJobFromResult(result: any, contractId: string) {
+  return result;
+}
+
+// 1. GET /api/jobs/by-wallet/:address - Paginated & Cached Jobs
 router.get('/api/jobs/by-wallet/:address', async (req: Request, res: Response) => {
   const startTime = Date.now();
   const { address } = req.params;
@@ -57,5 +81,80 @@ router.get('/api/jobs/by-wallet/:address', async (req: Request, res: Response) =
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// 2. GET /api/jobs/:contractId - Get job state from Stellar Smart Contract
+router.get(
+  "/:contractId",
+  jobContractCors,
+  jobContractSecurityHeaders,
+  jobContractRateLimit,
+  async (req: Request, res: Response) => {
+    const { contractId } = req.params;
+
+    if (!isValidStellarContractId(contractId as string)) {
+      sendError(
+        res,
+        400,
+        "contractId must be a valid Stellar contract address (C...)"
+      );
+      return;
+    }
+
+    const requiredApiKey = process.env.API_KEY;
+    if (requiredApiKey) {
+      const providedKey = req.header("x-api-key");
+      if (providedKey !== requiredApiKey) {
+        sendError(res, 401, "Unauthorized");
+        return;
+      }
+    }
+
+    try {
+      const contract = new Contract(contractId as string);
+      const account = await server.getAccount(process.env.DEPLOYER_ADDRESS || "");
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      })
+        .addOperation(contract.call("get_job"))
+        .setTimeout(30)
+        .build();
+
+      const result = await server.simulateTransaction(tx);
+
+      if ("error" in result) {
+        const errorMsg = String(result.error);
+        if (
+          /not found|NotFound|contract not found/i.test(errorMsg) ||
+          /contract error #1\b/i.test(errorMsg)
+        ) {
+          sendError(res, 404, "Job not found");
+          return;
+        }
+        sendError(res, 500, errorMsg);
+        return;
+      }
+
+      const job = parseJobFromResult(result, contractId as string);
+      if (!job) {
+        sendError(res, 404, "Job not found");
+        return;
+      }
+
+      sendSuccess(res, job);
+    } catch (err: any) {
+      const message = err?.message ?? "Internal server error";
+      if (/unauthorized|authentication|401/i.test(message)) {
+        sendError(res, 401, "Unauthorized");
+        return;
+      }
+      if (/not found|404/i.test(message)) {
+        sendError(res, 404, "Job not found");
+        return;
+      }
+      sendError(res, 500, message);
+    }
+  }
+);
 
 export default router;
